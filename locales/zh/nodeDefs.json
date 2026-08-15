@@ -1,0 +1,329 @@
+{
+  "llama_cpp_model_loader": {
+    "display_name": "Llama-cpp 模型加载器",
+    "inputs": {
+      "model": {
+        "name": "模型文件"
+      },
+      "mmproj": {
+        "name": "视觉投影文件 (mmproj)"
+      },
+      "chat_handler": {
+        "name": "对话处理器"
+      },
+      "n_ctx": {
+        "name": "上下文长度",
+        "tooltip": "上下文长度限制"
+      },
+      "vram_limit": {
+        "name": "显存限制（GB）",
+        "tooltip": "显存使用上限（GB，-1 表示不限制）\n仅供参考，实际占用可能略有超出"
+      },
+      "image_min_tokens": {
+        "name": "图像最小 Token 数"
+      },
+      "image_max_tokens": {
+        "name": "图像最大 Token 数"
+      },
+      "load_mtp": {
+        "name": "加载 MTP"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "模型配置"
+      }
+    }
+  },
+  "llama_cpp_instruct_adv": {
+    "display_name": "Llama-cpp 指令对话",
+    "inputs": {
+      "llama_model": {
+        "name": "Llama 模型"
+      },
+      "preset_prompt": {
+        "name": "预设提示词"
+      },
+      "custom_prompt": {
+        "name": "自定义提示词"
+      },
+      "system_prompt": {
+        "name": "系统提示词"
+      },
+      "inference_mode": {
+        "name": "推理模式",
+        "tooltip": "one by one：逐个处理输入列表中的每个条目（条目内的多图批次将一起推理）\nimages：将所有列表条目中的全部图像合并到同一条提示中\nvideo：将列表中的每个图像条目视为独立的视频片段"
+      },
+      "max_frames": {
+        "name": "最大帧数",
+        "tooltip": "从输入视频中均匀采样的帧数\n（仅“video”模式生效）"
+      },
+      "max_size": {
+        "name": "最大尺寸",
+        "tooltip": "“images”和“video”模式下输入图像的最大尺寸"
+      },
+      "seed": {
+        "name": "随机种子"
+      },
+      "force_offload": {
+        "name": "推理后卸载模型",
+        "tooltip": "推理结束后卸载模型"
+      },
+      "save_states": {
+        "name": "保存对话状态",
+        "tooltip": "在内存中保留本次对话的上下文"
+      },
+      "parameters": {
+        "name": "推理参数"
+      },
+      "images": {
+        "name": "输入图像"
+      },
+      "queue_handler": {
+        "name": "队列控制器",
+        "tooltip": "用于控制 Instruct 节点的执行顺序"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "输出文本"
+      },
+      "1": {
+        "name": "输出列表"
+      },
+      "2": {
+        "name": "状态 ID"
+      }
+    }
+  },
+  "llama_cpp_parameters": {
+    "display_name": "Llama-cpp 推理参数",
+    "inputs": {
+      "max_tokens": {
+        "name": "最大 Token 数"
+      },
+      "top_k": {
+        "name": "Top-K"
+      },
+      "top_p": {
+        "name": "Top-P"
+      },
+      "min_p": {
+        "name": "Min-P"
+      },
+      "typical_p": {
+        "name": "Typical-P"
+      },
+      "temperature": {
+        "name": "温度"
+      },
+      "repeat_penalty": {
+        "name": "重复惩罚"
+      },
+      "frequency_penalty": {
+        "name": "频率惩罚"
+      },
+      "present_penalty": {
+        "name": "存在惩罚"
+      },
+      "mirostat_mode": {
+        "name": "Mirostat 模式"
+      },
+      "mirostat_eta": {
+        "name": "Mirostat Eta"
+      },
+      "mirostat_tau": {
+        "name": "Mirostat Tau"
+      },
+      "state_uid": {
+        "name": "状态 ID",
+        "tooltip": "使用指定 ID 保存对话状态\n（-1 = 使用节点自身的 unique_id）"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "推理参数"
+      }
+    }
+  },
+  "llama_cpp_clean_states": {
+    "display_name": "Llama-cpp 清理对话状态",
+    "inputs": {
+      "any": {
+        "name": "任意输入"
+      },
+      "state_uid": {
+        "name": "状态 ID",
+        "tooltip": "清除指定 ID 保存的状态（-1 = 清除全部）"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "任意数据"
+      }
+    }
+  },
+  "llama_cpp_unload_model": {
+    "display_name": "Llama-cpp 卸载模型",
+    "inputs": {
+      "any": {
+        "name": "任意输入"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "任意数据"
+      }
+    }
+  },
+  "parse_json_node": {
+    "display_name": "解析 JSON",
+    "inputs": {
+      "input": {
+        "name": "输入"
+      },
+      "key": {
+        "name": "键名"
+      },
+      "default": {
+        "name": "默认值"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "任意"
+      },
+      "1": {
+        "name": "字符串"
+      },
+      "2": {
+        "name": "整数"
+      },
+      "3": {
+        "name": "浮点数"
+      },
+      "4": {
+        "name": "布尔值"
+      }
+    }
+  },
+  "json_to_bbox": {
+    "display_name": "JSON 转边界框",
+    "inputs": {
+      "json": {
+        "name": "JSON 输入"
+      },
+      "mode": {
+        "name": "解析模式"
+      },
+      "label": {
+        "name": "标签过滤",
+        "tooltip": "仅保留带有指定标签的边界框"
+      },
+      "image": {
+        "name": "输入图像"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "边界框列表"
+      },
+      "1": {
+        "name": "图像列表"
+      }
+    }
+  },
+  "bbox_to_segs": {
+    "display_name": "边界框转 SEGS",
+    "inputs": {
+      "bboxes": {
+        "name": "边界框"
+      },
+      "image": {
+        "name": "输入图像"
+      },
+      "dilation": {
+        "name": "扩展像素"
+      },
+      "feather": {
+        "name": "羽化"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "分割区域 (SEGS)"
+      }
+    }
+  },
+  "bbox_to_mask": {
+    "display_name": "边界框转遮罩",
+    "inputs": {
+      "bboxes": {
+        "name": "边界框"
+      },
+      "image": {
+        "name": "输入图像"
+      },
+      "dilation": {
+        "name": "扩展像素"
+      },
+      "feather": {
+        "name": "羽化"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "遮罩"
+      }
+    }
+  },
+  "bboxes_to_bbox": {
+    "display_name": "选择边界框",
+    "inputs": {
+      "bboxes": {
+        "name": "边界框"
+      },
+      "image_index": {
+        "name": "图像索引"
+      },
+      "bbox_index": {
+        "name": "边界框索引",
+        "tooltip": "图像中的边界框索引，设为 999 返回全部边界框"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "边界框"
+      }
+    }
+  },
+  "remove_code_block": {
+    "display_name": "去除代码块标记",
+    "inputs": {
+      "input": {
+        "name": "输入"
+      },
+      "label": {
+        "name": "代码块语言"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "输出文本"
+      }
+    }
+  },
+  "PromptEnhancerPreset": {
+    "display_name": "提示词增强预设",
+    "inputs": {
+      "preset": {
+        "name": "预设"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "系统提示词"
+      }
+    }
+  }
+}
