@@ -4,6 +4,7 @@ import gc
 import json
 import base64
 import random
+import re
 import torch
 import inspect
 
@@ -57,10 +58,18 @@ try:
     chat_handlers += ["Qwen3-VL", "Qwen3-VL-Thinking"]
 except Exception:
     Qwen3VLChatHandler = None
+
+try:
+    from llama_cpp.llama_chat_format import Jinja2ChatFormatter, chat_formatter_to_chat_completion_handler
+except Exception:
+    Jinja2ChatFormatter = None
+    chat_formatter_to_chat_completion_handler = None
     
 try:
     from llama_cpp.llama_chat_format import Qwen35ChatHandler
     chat_handlers += ["Qwen3.5", "Qwen3.5-Thinking", "Qwen3.6", "Qwen3.6-Thinking"]
+    if Qwen35ChatHandler is not None and Jinja2ChatFormatter is not None and chat_formatter_to_chat_completion_handler is not None:
+        chat_handlers += ["Qwen3.8", "Qwen3.8-Thinking"]
 except Exception:
     Qwen35ChatHandler = None
     
@@ -114,6 +123,172 @@ try:
 except Exception:
     Step3VLChatHandler = None
 
+# ---------- Qwen3.8 适配 ----------
+QWEN38_REASONING_EFFORTS = ["xhigh", "medium", "low"]
+QWEN38_THINK_SAMPLING = (1.0, 0.95, 20)
+QWEN38_NON_THINK_SAMPLING = (0.7, 0.80, 20)
+QWEN38_SUPPORTED = (
+    Qwen35ChatHandler is not None
+    and Jinja2ChatFormatter is not None
+    and chat_formatter_to_chat_completion_handler is not None
+)
+
+def _create_multimodal_handler(handler_cls, mmproj_path, **kwargs):
+    try:
+        return handler_cls(mmproj_path=mmproj_path, **kwargs)
+    except TypeError as exc:
+        error_text = str(exc)
+        if ("mmproj_path" in error_text and "unexpected" in error_text.lower()) or ("clip_model_path" in error_text and "required" in error_text.lower()):
+            return handler_cls(clip_model_path=mmproj_path, **kwargs)
+        raise
+
+def _adapt_qwen38_mtmd_template(chat_template):
+    """将 Transformers 的 image_pad 占位符改为当前 MTMD handler 可替换的图片 URL。"""
+    if not chat_template or "<|image_pad|>" not in chat_template:
+        return chat_template
+
+    image_output_pattern = re.compile(
+        r"\{\{-?\s*(['\"])<\|vision_start\|><\|image_pad\|><\|vision_end\|>\1\s*-?\}\}"
+    )
+    image_output_replacement = (
+        "{{- '<|vision_start|>' }}"
+        "{%- if item.image_url is string %}"
+        "{{- item.image_url }}"
+        "{%- else %}"
+        "{{- item.image_url.url }}"
+        "{%- endif %}"
+        "{{- '<|vision_end|>' }}"
+    )
+    adapted_template, replacement_count = image_output_pattern.subn(image_output_replacement, chat_template)
+    if replacement_count == 0:
+        raise RuntimeError("Qwen3.8 聊天模板包含 <|image_pad|>，但格式无法适配当前 llama.cpp MTMD handler。")
+    return adapted_template
+
+def _create_qwen38_mmproj_handler(mmproj_path, enable_thinking, preserve_thinking, reasoning_effort, chat_template_override):
+    if Qwen35ChatHandler is None:
+        raise RuntimeError('Qwen35ChatHandler is unavailable! Please update llama-cpp-python from "https://github.com/JamePeng/llama-cpp-python/releases"')
+
+    shared_kwargs = {
+        "verbose": False,
+        "chat_template_override": chat_template_override,
+        "extra_template_arguments": {"reasoning_effort": reasoning_effort},
+    }
+    candidate_kwargs = [
+        {"enable_thinking": enable_thinking, "add_vision_id": True, "preserve_thinking": preserve_thinking, **shared_kwargs},
+        {"enable_thinking": enable_thinking, "preserve_thinking": preserve_thinking, **shared_kwargs},
+        {"enable_thinking": enable_thinking, "add_vision_id": True, **shared_kwargs},
+        {"enable_thinking": enable_thinking, **shared_kwargs},
+    ]
+
+    last_error = None
+    for kwargs in candidate_kwargs:
+        try:
+            return _create_multimodal_handler(Qwen35ChatHandler, mmproj_path, **kwargs)
+        except TypeError as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Failed to create Qwen3.8 mmproj handler.")
+
+def _create_qwen38_text_handler(llm, enable_thinking, preserve_thinking, reasoning_effort):
+    if Jinja2ChatFormatter is None or chat_formatter_to_chat_completion_handler is None:
+        raise RuntimeError('Jinja2ChatFormatter is unavailable! Please update llama-cpp-python from "https://github.com/JamePeng/llama-cpp-python/releases"')
+
+    metadata = getattr(llm, "metadata", {}) or {}
+    chat_template = metadata.get("tokenizer.chat_template")
+    if not chat_template:
+        raise RuntimeError("Qwen3.8 GGUF 缺少 tokenizer.chat_template，无法应用 Qwen3.8 推理设置。")
+
+    model = getattr(llm, "_model", None)
+
+    def token_text(token_id):
+        if token_id == -1 or model is None or not hasattr(model, "token_get_text"):
+            return ""
+        return model.token_get_text(token_id)
+
+    def token_id(getter):
+        try:
+            return getter()
+        except Exception:
+            return -1
+
+    eos_token_id = token_id(getattr(llm, "token_eos", None))
+    bos_token_id = token_id(getattr(llm, "token_bos", None))
+    eot_token_id = token_id(getattr(llm, "token_eot", None))
+    stop_token_ids = [tid for tid in (eos_token_id, eot_token_id) if tid != -1] or None
+
+    formatter = Jinja2ChatFormatter(
+        template=chat_template,
+        eos_token=token_text(eos_token_id),
+        bos_token=token_text(bos_token_id),
+        stop_token_ids=stop_token_ids,
+    )
+
+    def qwen38_formatter(*, messages, **kwargs):
+        kwargs.update({
+            "enable_thinking": enable_thinking,
+            "preserve_thinking": preserve_thinking,
+            "reasoning_effort": reasoning_effort,
+        })
+        return formatter(messages=messages, **kwargs)
+
+    return chat_formatter_to_chat_completion_handler(qwen38_formatter)
+
+def _reset_qwen38_state(llm):
+    try:
+        ctx = getattr(llm, "_ctx", None)
+        if ctx is not None and hasattr(ctx, "memory_clear"):
+            ctx.memory_clear(True)
+    except Exception:
+        pass
+    try:
+        hybrid_cache_mgr = getattr(llm, "_hybrid_cache_mgr", None)
+        if hybrid_cache_mgr is not None and hasattr(hybrid_cache_mgr, "clear"):
+            hybrid_cache_mgr.clear()
+    except Exception:
+        pass
+    try:
+        batch = getattr(llm, "_batch", None)
+        if batch is not None and hasattr(batch, "reset"):
+            batch.reset()
+    except Exception:
+        pass
+    try:
+        input_ids = getattr(llm, "input_ids", None)
+        if input_ids is not None and hasattr(input_ids, "fill"):
+            input_ids.fill(0)
+    except Exception:
+        pass
+    try:
+        reset = getattr(llm, "reset", None)
+        if callable(reset):
+            reset()
+        elif hasattr(llm, "n_tokens"):
+            llm.n_tokens = 0
+    except Exception:
+        pass
+
+def _apply_qwen38_sampling(chat_handler, parameters):
+    if chat_handler not in ("Qwen3.8", "Qwen3.8-Thinking"):
+        return parameters
+    think_mode = "Thinking" in chat_handler
+    recommended_temperature, recommended_top_p, recommended_top_k = (
+        QWEN38_THINK_SAMPLING if think_mode else QWEN38_NON_THINK_SAMPLING
+    )
+    parameters = parameters.copy()
+    if abs(float(parameters.get("temperature", 0.8)) - 0.8) < 1e-9:
+        parameters["temperature"] = recommended_temperature
+    if abs(float(parameters.get("top_p", 0.9)) - 0.9) < 1e-9:
+        parameters["top_p"] = recommended_top_p
+    if int(parameters.get("top_k", 30)) == 30:
+        parameters["top_k"] = recommended_top_k
+    print(
+        f"[llama-cpp_vlm] Qwen3.8 sampling: thinking={think_mode}, "
+        f"temperature={parameters['temperature']}, top_p={parameters['top_p']}, top_k={parameters['top_k']}"
+    )
+    return parameters
+
 class AnyType(str):
     def __ne__(self, __value: object) -> bool:
         return False
@@ -161,7 +336,7 @@ class LLAMA_CPP_STORAGE:
     def load_model(cls, config):
         def get_chat_handler(chat_handler):
             match chat_handler:
-                case "Qwen3.5"|"Qwen3.5-Thinking"|"Qwen3.6"|"Qwen3.6-Thinking":
+                case "Qwen3.5"|"Qwen3.5-Thinking"|"Qwen3.6"|"Qwen3.6-Thinking"|"Qwen3.8"|"Qwen3.8-Thinking":
                     return Qwen35ChatHandler
                 case "Qwen3-VL"|"Qwen3-VL-Thinking":
                     return Qwen3VLChatHandler
@@ -220,10 +395,19 @@ class LLAMA_CPP_STORAGE:
         image_max_tokens = config["image_max_tokens"]
         image_min_tokens = config["image_min_tokens"]
         load_mtp = config["load_mtp"]
+        preserve_thinking = config.get("preserve_thinking", False)
+        reasoning_effort = config.get("reasoning_effort", "xhigh")
         n_gpu_layers = -1
         
         model_path = os.path.join(folder_paths.models_dir, 'LLM', model)
         handler_cls = get_chat_handler(chat_handler)
+        think_mode = "Thinking" in chat_handler
+        qwen38_mode = chat_handler in ("Qwen3.8", "Qwen3.8-Thinking")
+        if qwen38_mode:
+            if not QWEN38_SUPPORTED:
+                raise RuntimeError('"Qwen3.8" requires an updated llama-cpp-python with Jinja2 chat template support!')
+            if reasoning_effort not in QWEN38_REASONING_EFFORTS:
+                raise ValueError(f'Unknown Qwen3.8 reasoning_effort: "{reasoning_effort}"')
         
         if vram_limit != -1:
             gguf_layers = get_layer_count(model_path) or 32
@@ -244,7 +428,6 @@ class LLAMA_CPP_STORAGE:
             
             print(f"[llama-cpp_vlm] Loading clip: {mmproj}")
             
-            think_mode = "Thinking" in chat_handler
             kwargs = {"clip_model_path": mmproj_path, "verbose": False}
             if chat_handler in ["Qwen3-VL", "Qwen3-VL-Thinking"]:
                 kwargs["force_reasoning"] = think_mode
@@ -257,15 +440,19 @@ class LLAMA_CPP_STORAGE:
                 kwargs["image_max_tokens"] = image_max_tokens
                 kwargs["image_min_tokens"] = image_min_tokens
 
-            try:
-                cls.chat_handler = handler_cls(**kwargs)
-            except Exception as e:
-                raise RuntimeError(f"{e}\nPlease update llama-cpp-python from 'https://github.com/JamePeng/llama-cpp-python/releases'")
+            if qwen38_mode:
+                # Qwen3.8 必须使用主模型 GGUF 自带的新聊天模板，因此先加载主模型，之后再创建 handler
+                cls.chat_handler = None
+            else:
+                try:
+                    cls.chat_handler = handler_cls(**kwargs)
+                except Exception as e:
+                    raise RuntimeError(f"{e}\nPlease update llama-cpp-python from 'https://github.com/JamePeng/llama-cpp-python/releases'")
 
         else:
             if vram_limit != -1:
                 n_gpu_layers = max(1, int(vram_limit / gguf_layer_size))
-            if handler_cls is not None:
+            if handler_cls is not None and not qwen38_mode:
                 cls.chat_handler = handler_cls(verbose=False)
             else:
                 cls.chat_handler = None
@@ -286,6 +473,36 @@ class LLAMA_CPP_STORAGE:
                 raise RuntimeError('"load_mtp" is unavailable! Please upgrade your llama-cpp-python.')
             
         cls.llm = Llama(**kwargs)
+
+        if qwen38_mode:
+            try:
+                metadata = getattr(cls.llm, "metadata", {}) or {}
+                chat_template = metadata.get("tokenizer.chat_template")
+                if not chat_template:
+                    raise RuntimeError("Qwen3.8 GGUF 缺少 tokenizer.chat_template，无法应用 Qwen3.8 推理设置。")
+                if mmproj and mmproj != "None":
+                    cls.chat_handler = _create_qwen38_mmproj_handler(
+                        mmproj_path,
+                        enable_thinking=think_mode,
+                        preserve_thinking=preserve_thinking,
+                        reasoning_effort=reasoning_effort,
+                        chat_template_override=_adapt_qwen38_mtmd_template(chat_template),
+                    )
+                else:
+                    cls.chat_handler = _create_qwen38_text_handler(
+                        cls.llm,
+                        enable_thinking=think_mode,
+                        preserve_thinking=preserve_thinking,
+                        reasoning_effort=reasoning_effort,
+                    )
+                cls.llm.chat_handler = cls.chat_handler
+            except Exception:
+                try:
+                    cls.llm.close()
+                except Exception:
+                    pass
+                cls.llm = None
+                raise
 
 any_type = AnyType("*")
 
@@ -403,8 +620,8 @@ class llama_cpp_model_loader:
     @classmethod
     def INPUT_TYPES(s):
         all_llms = folder_paths.get_filename_list("LLM")
-        model_list = [f for f in all_llms if "mmproj" not in f.lower()]
-        mmproj_list = ["None"] + [f for f in all_llms if "mmproj" in f.lower()]
+        model_list = [f for f in all_llms if "mmproj" not in f.lower() and "vision" not in f.lower()]
+        mmproj_list = ["None"] + [f for f in all_llms if "mmproj" in f.lower() or "vision" in f.lower()]
             
         return {"required": {
             "model": (model_list,),
@@ -440,7 +657,7 @@ class llama_cpp_model_loader:
             "vram_limit": vram_limit,
             "image_min_tokens": image_min_tokens,
             "image_max_tokens": image_max_tokens,
-            "load_mtp": load_mtp
+            "load_mtp": load_mtp,
         }
         if not LLAMA_CPP_STORAGE.llm or LLAMA_CPP_STORAGE.current_config != custom_config:
             print("[llama-cpp_vlm] Loading model...")
@@ -539,6 +756,10 @@ class llama_cpp_instruct_adv:
         _parameters = parameters.copy()
         _parameters.pop("state_uid", None)
         uid = str(unique_id).rpartition('.')[-1] if _uid in (None, -1) else str(_uid)
+
+        current_chat_handler = LLAMA_CPP_STORAGE.current_config.get("chat_handler") if LLAMA_CPP_STORAGE.current_config else None
+        if current_chat_handler in ("Qwen3.8", "Qwen3.8-Thinking"):
+            _parameters = _apply_qwen38_sampling(current_chat_handler, _parameters)
         
         last_sys_prompt = LLAMA_CPP_STORAGE.sys_prompts.get(f"{uid}", None)
         video_input = inference_mode == "video"
@@ -692,6 +913,8 @@ class llama_cpp_instruct_adv:
                 LLAMA_CPP_STORAGE.llm._ctx.memory_clear(True)
                 if LLAMA_CPP_STORAGE.llm.is_hybrid and LLAMA_CPP_STORAGE.llm._hybrid_cache_mgr is not None:
                     LLAMA_CPP_STORAGE.llm._hybrid_cache_mgr.clear()
+            elif LLAMA_CPP_STORAGE.current_config and LLAMA_CPP_STORAGE.current_config["chat_handler"] in ["Qwen3.8", "Qwen3.8-Thinking"]:
+                _reset_qwen38_state(LLAMA_CPP_STORAGE.llm)
                     
         del messages
         gc.collect()
